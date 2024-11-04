@@ -1,0 +1,69 @@
+---
+title: "Tidy Tuesday - Orca Encounters"
+date: "10/15/2024"
+author: "Melissa Albino Hegeman"
+format: html
+editor_options: 
+  chunk_output_type: console
+execute:
+  echo: false
+---
+
+```{r setup}
+
+library(tidyverse)
+
+```
+
+
+[GitHub Link](https://github.com/rfordatascience/tidytuesday/tree/master/data/2024/2024-10-15)
+
+
+## Reading the data
+
+```{r}
+orca_data <- readr::read_csv("data/orcas.csv")
+
+orca_data |> 
+  dplyr::glimpse()
+```
+
+
+
+## When are encounters happening?
+
+```{r}
+
+missing_date <- orca_data |> 
+  dplyr::filter(is.na(date))
+min_date <- orca_data |> 
+  dplyr::filter(!is.na(date)) |> 
+  dplyr::summarise(min_date = min(date))
+max_date <- orca_data |> 
+  dplyr::filter(!is.na(date)) |> 
+  dplyr::summarise(max_date = max(date))
+
+
+write_csv(orca_data |> head(50), "data/orcas_sample.csv")
+```
+
+
+```{r}
+
+# makek a bar plot of encounters by year where every year is labeled on the x axis
+
+orca_data |> 
+  dplyr::filter(!is.na(year))|> 
+  ggplot(aes(x = year)) +
+  geom_bar() +
+  labs(title = "Orca Encounters by Year",
+       x = "Year",
+       y = "Number of Encounters") +
+  theme_minimal()
+
+
+
+
+```
+
+

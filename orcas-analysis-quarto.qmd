@@ -1,0 +1,253 @@
+---
+title: "Orcas Dataset Analysis"
+author: "Melissa"
+format: 
+  html:
+    code-fold: true
+    toc: true
+    toc-depth: 3
+execute:
+  warning: false
+  message: false
+  echo: false
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup}
+#| label: setup
+#| include: false
+
+# Load required libraries
+library(tidyverse)
+library(lubridate)
+library(knitr)
+library(ggplot2)
+library(sf)
+library(leaflet)
+
+# Read the CSV file
+orcas_data <- read_csv("data/orcas.csv")
+
+# Convert date and time columns to appropriate formats
+orcas_data <- orcas_data %>%
+  mutate(
+    date = ymd(date),
+    begin_time = hms(begin_time),
+    end_time = hms(end_time)
+  ) 
+```
+
+## Introduction
+
+This report analyzes the orcas dataset, which contains information about orca encounters in the Pacific Northwest. We'll explore various aspects of the data, including encounter statistics, pod distributions, and spatial patterns.
+
+## Data Overview
+
+Let's start by looking at the structure of our dataset and some basic summary statistics.
+
+```{r data-overview}
+#| label: data-overview
+#| include: false
+
+# Display structure of the dataset
+str(orcas_data)
+
+# Summary statistics
+summary(orcas_data)
+
+# Display first few rows
+head(orcas_data)
+```
+
+## Data Cleaning
+
+This data still needs a lot of cleaning before we can analyze it. Here is a list of changes: 
+ - Convert all text columns to uppercase to standardize names.
+ - Add a new column for row id, each row needs a unique identifier.
+ - Calculate actual start and end times based on date and time columns. This is more useful to me than the periods in the original columns. 
+ - Calculate the actual duration of each encounter based on the actual start and end times.
+ - Create points and lines that can be mapped from the latitude and longitude columns.
+
+```{r}
+#| label: data-cleaning
+
+# add a new column for row id 
+
+orcas_clean <- orcas_data |> 
+  arrange(date, encounter_number, encounter_sequence) |> 
+  mutate(across(where(is.character), toupper),
+         row_id = row_number(),
+         actual_start_time = date + begin_time,
+         actual_end_time = date + end_time,
+         actual_duration = actual_end_time - actual_start_time) 
+  
+```
+
+
+
+## Encounter Statistics
+
+### Number of Encounters by Year
+
+Let's examine the number of encounters recorded each year.
+
+```{r encounters-by-year}
+#| label: encounters-by-year
+
+encounters_by_year <- orcas_clean %>%
+  count(year) %>%
+  arrange(desc(n))
+
+ggplot(encounters_by_year, aes(x = as.factor(year), y = n)) +
+  geom_bar(stat = "identity", fill = "navy") +
+  labs(title = "Number of Orca Encounters by Year",
+       x = "Year",
+       y = "Number of Encounters") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+
+## Spatial Analysis
+
+Let's visualize the spatial distribution of orca encounters.
+
+```{r spatial-analysis}
+#| label: spatial-analysis
+
+ggplot(orcas_data, aes(x = begin_longitude, y = begin_latitude)) +
+  geom_point(aes(color = pods_or_ecotype), alpha = 0.6) +
+  labs(title = "Spatial Distribution of Orca Encounters",
+       x = "Longitude",
+       y = "Latitude",
+       color = "Pod/Ecotype") +
+  theme_minimal()
+```
+
+
+## Mapping
+
+```{r}
+#| label: make points
+
+# Create a simple map of the Pacific Northwest
+
+begin_points <- st_as_sf(orcas_clean |> 
+                           filter(!is.na(begin_longitude) & !is.na(begin_latitude) & !is.na(end_longitude) & !is.na(end_latitude)), 
+                         coords = c("begin_longitude", "begin_latitude")) |> 
+  mutate(point_type = "begin") |> 
+  select(row_id, point_type, geometry)
+
+end_points <- st_as_sf(orcas_clean |>
+                         filter(!is.na(end_longitude) & !is.na(end_latitude) & !is.na(begin_longitude) & !is.na(begin_latitude)),
+                       coords = c("end_longitude", "end_latitude")) |> 
+  mutate(point_type = "end") |> 
+  select(row_id, point_type, geometry)
+
+all_points <- rbind(begin_points, end_points) |> 
+  arrange(row_id, point_type)
+
+
+```
+
+
+```{r}
+#| label: make lines
+
+# turn orca_clean into line geometries
+library(sf)
+library(dplyr)
+
+# Starting with your dataframe (let's call it points_df)
+# Convert the geometry strings to coordinates
+all_points$coords <- lapply(all_points$geometry, function(x) eval(parse(text = x)))
+
+# Group by row_id and create lines
+lines_sf <- all_points %>%
+  group_by(row_id) %>%
+  summarize(
+    # Get the begin coordinates
+    start_coords = coords[point_type == "begin"][[1]],
+    # Get the end coordinates
+    end_coords = coords[point_type == "end"][[1]]
+  ) %>%
+  # Create lines from the coordinate pairs
+  mutate(geometry = mapply(function(start, end) {
+    st_linestring(matrix(c(start, end), ncol = 2, byrow = TRUE))
+  }, start_coords, end_coords, SIMPLIFY = FALSE)) %>%
+  # Convert to sf object
+  st_sf()
+
+# Set the CRS to WGS84
+st_crs(lines_sf) <- 4326
+
+```
+
+
+```{r}
+#| label: calculate centroids
+
+# Calculate centroids
+centroids_sf <- st_centroid(lines_sf)
+
+# If you want the coordinates as separate columns
+centroids_df <- centroids_sf %>%
+  mutate(
+    lon = st_coordinates(geometry)[,1],
+    lat = st_coordinates(geometry)[,2]
+  )
+
+```
+
+
+
+
+
+
+```{r}
+#| label: plot maps
+
+library(ggplot2)
+library(sf)
+library(ggspatial)
+
+# Create the map
+# ggplot() +
+#   # Add the lines
+#   geom_sf(data = lines_sf, color = "gray50") +
+#   # Add the centroids
+#   geom_sf(data = centroids_sf, color = "red", size = 3) +
+#   # Clean up the theme
+#   theme_minimal() +
+#   # Add title
+#   labs(title = "Line Centroids")
+
+```
+
+
+
+```{r}
+st_is_valid(lines_sf)
+st_is_valid(centroids_sf)
+
+print(head(lines_sf))
+print(head(centroids_sf))
+
+
+```
+
+
+
+## Conclusion
+
+This analysis provides insights into the orca encounters recorded in the dataset. We've explored the number of encounters by year, encounter durations, pod distributions, and spatial patterns. Further analysis could include temporal patterns, relationships between variables, and more detailed spatial analysis.
+
+```{r}
+#| label: session-info
+#| echo: false
+
+# Print session info for reproducibility
+sessionInfo()
+```
