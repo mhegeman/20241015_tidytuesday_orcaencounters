@@ -1,6 +1,6 @@
 ---
-title: "Orcas Dataset Analysis"
-author: "Melissa"
+title: "Mapping Orca Encounters in the Pacific Northwest"
+author: "Melissa Albino Hegeman"
 format: 
   html:
     code-fold: true
@@ -25,6 +25,8 @@ library(knitr)
 library(ggplot2)
 library(sf)
 library(leaflet)
+library(dplyr)
+library(ggthemes)
 
 # Read the CSV file
 orcas_data <- read_csv("data/orcas.csv")
@@ -38,36 +40,16 @@ orcas_data <- orcas_data %>%
   ) 
 ```
 
-## Introduction
 
-This report analyzes the orcas dataset, which contains information about orca encounters in the Pacific Northwest. We'll explore various aspects of the data, including encounter statistics, pod distributions, and spatial patterns.
 
-## Data Overview
 
-Let's start by looking at the structure of our dataset and some basic summary statistics.
+## Overview
 
-```{r data-overview}
-#| label: data-overview
-#| include: false
-
-# Display structure of the dataset
-str(orcas_data)
-
-# Summary statistics
-summary(orcas_data)
-
-# Display first few rows
-head(orcas_data)
-```
+This data set is from the [#TidyTuesday](https://github.com/rfordatascience/tidytuesday/blob/master/data/2024/2024-10-15/readme.md) project and contains information about orca sightings in the Pacific Northwest. My goals is to start learning to make with open source tools - including R. Most of my daily workflow is happening in R anyway, so it makes sense to be able to create maps in R as well. I will be focusing on creating the points, lines, and polygons from the csv file using the sf package and then experiment with a variety of packages for mapping the data including leaflet and ggplot2. 
 
 ## Data Cleaning
 
-This data still needs a lot of cleaning before we can analyze it. Here is a list of changes: 
- - Convert all text columns to uppercase to standardize names.
- - Add a new column for row id, each row needs a unique identifier.
- - Calculate actual start and end times based on date and time columns. This is more useful to me than the periods in the original columns. 
- - Calculate the actual duration of each encounter based on the actual start and end times.
- - Create points and lines that can be mapped from the latitude and longitude columns.
+I started by cleaning up the data and adding a unique identifier for each row. Several rows with incomplete information were removed from the data set and I only kept the columns that I planned on using. 
 
 ```{r}
 #| label: data-cleaning
@@ -77,72 +59,42 @@ This data still needs a lot of cleaning before we can analyze it. Here is a list
 orcas_clean <- orcas_data |> 
   arrange(date, encounter_number, encounter_sequence) |> 
   mutate(across(where(is.character), toupper),
-         row_id = row_number(),
-         actual_start_time = date + begin_time,
-         actual_end_time = date + end_time,
-         actual_duration = actual_end_time - actual_start_time) 
+         row_id = row_number()) |> 
+  select(row_id, year, date, encounter_number, encounter_sequence, pods_or_ecotype, ids_encountered, location, begin_latitude, begin_longitude, end_latitude, end_longitude)
+
+pod_info <- orcas_clean |> 
+  select(row_id, pods_or_ecotype) |> 
+  filter(!is.na(pods_or_ecotype)) |> 
+  distinct()
+
+
   
 ```
 
 
 
-## Encounter Statistics
+## Mapping Orca Encounters
 
-### Number of Encounters by Year
-
-Let's examine the number of encounters recorded each year.
-
-```{r encounters-by-year}
-#| label: encounters-by-year
-
-encounters_by_year <- orcas_clean %>%
-  count(year) %>%
-  arrange(desc(n))
-
-ggplot(encounters_by_year, aes(x = as.factor(year), y = n)) +
-  geom_bar(stat = "identity", fill = "navy") +
-  labs(title = "Number of Orca Encounters by Year",
-       x = "Year",
-       y = "Number of Encounters") +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-```
-
-
-
-## Spatial Analysis
-
-Let's visualize the spatial distribution of orca encounters.
-
-```{r spatial-analysis}
-#| label: spatial-analysis
-
-ggplot(orcas_data, aes(x = begin_longitude, y = begin_latitude)) +
-  geom_point(aes(color = pods_or_ecotype), alpha = 0.6) +
-  labs(title = "Spatial Distribution of Orca Encounters",
-       x = "Longitude",
-       y = "Latitude",
-       color = "Pod/Ecotype") +
-  theme_minimal()
-```
-
-
-## Mapping
+Each trip, or row in the data set, has a beginning and ending location. We need to transform the these columns in to point geometries. This is done with the `st_as_sf` function from the `sf` package. Since the data is from a GPS unit, we will be using the WGS84 coordinate reference system (4326). 
 
 ```{r}
 #| label: make points
 
-# Create a simple map of the Pacific Northwest
+
 
 begin_points <- st_as_sf(orcas_clean |> 
                            filter(!is.na(begin_longitude) & !is.na(begin_latitude) & !is.na(end_longitude) & !is.na(end_latitude)), 
-                         coords = c("begin_longitude", "begin_latitude")) |> 
+                         coords = c("begin_longitude", "begin_latitude"),
+                         crs = 4326 #WGS84
+                         ) |> 
   mutate(point_type = "begin") |> 
   select(row_id, point_type, geometry)
 
 end_points <- st_as_sf(orcas_clean |>
                          filter(!is.na(end_longitude) & !is.na(end_latitude) & !is.na(begin_longitude) & !is.na(begin_latitude)),
-                       coords = c("end_longitude", "end_latitude")) |> 
+                       coords = c("end_longitude", "end_latitude"),
+                       crs = 4326 #WGS84
+                       ) |> 
   mutate(point_type = "end") |> 
   select(row_id, point_type, geometry)
 
@@ -152,102 +104,303 @@ all_points <- rbind(begin_points, end_points) |>
 
 ```
 
+The next step is turning these beginning and ending points into lines by first creating a matrix of the data. That matrix is then used to create the lines in the st_sf function. 
+
 
 ```{r}
 #| label: make lines
 
-# turn orca_clean into line geometries
-library(sf)
-library(dplyr)
 
-# Starting with your dataframe (let's call it points_df)
-# Convert the geometry strings to coordinates
-all_points$coords <- lapply(all_points$geometry, function(x) eval(parse(text = x)))
-
-# Group by row_id and create lines
-lines_sf <- all_points %>%
-  group_by(row_id) %>%
-  summarize(
-    # Get the begin coordinates
-    start_coords = coords[point_type == "begin"][[1]],
-    # Get the end coordinates
-    end_coords = coords[point_type == "end"][[1]]
-  ) %>%
-  # Create lines from the coordinate pairs
-  mutate(geometry = mapply(function(start, end) {
-    st_linestring(matrix(c(start, end), ncol = 2, byrow = TRUE))
-  }, start_coords, end_coords, SIMPLIFY = FALSE)) %>%
-  # Convert to sf object
-  st_sf()
-
-# Set the CRS to WGS84
-st_crs(lines_sf) <- 4326
-
-```
-
-
-```{r}
-#| label: calculate centroids
-
-# Calculate centroids
-centroids_sf <- st_centroid(lines_sf)
-
-# If you want the coordinates as separate columns
-centroids_df <- centroids_sf %>%
-  mutate(
-    lon = st_coordinates(geometry)[,1],
-    lat = st_coordinates(geometry)[,2]
+# Create lines using the geometry columns
+lines_list <- lapply(1:nrow(begin_points), function(i) {
+  coords <- matrix(
+    c(
+      st_coordinates(begin_points$geometry)[i, ],  # coordinates of beginning point
+      st_coordinates(end_points$geometry)[i, ]     # coordinates of ending point
+    ),
+    ncol = 2,
+    byrow = TRUE
   )
+  st_linestring(coords)
+})
+
+# Convert list of linestrings to sf object
+lines_sf <- st_sf(
+  row_id = begin_points$row_id,  # assuming row_id is in your points data
+  geometry = st_sfc(lines_list, crs = st_crs(all_points))
+)
 
 ```
 
-
-
-
+Lastly, I wanted to calculate the centroids of the lines to be able to plot them on the map. 
 
 
 ```{r}
-#| label: plot maps
+#| label: create centroids for lines
 
-library(ggplot2)
+# Create centroids for the lines
+lines_centroids <- st_centroid(lines_sf) |> 
+  st_sf() |> 
+  mutate(line_id = lines_sf$row_id) |> 
+  left_join(orcas_clean |> 
+              select(row_id, year),
+            by = "row_id")
+
+
+
+```
+
+## Mapping the Data
+
+Even though I want to create some static maps, I decided to use the leaflet package to explore the data in an interactive map. You can visualize all of the data that we've created so far, pan and zoom, and toggle layers on and off. Having this exploratory view is helpful for deciding how to compose the final static map. 
+
+```{r}
+#| label: leaflet map
+
+# Load required libraries
 library(sf)
+library(leaflet)
+
+bbox <- st_bbox(all_points)
+
+# Create leaflet map
+leaflet()  |> 
+  # Add OSM tiles
+  addTiles() |>   
+  addPolylines(
+    data = lines_sf,
+    color = "purple",
+    weight = 2,
+    opacity = 0.8,
+    group = "Lines"
+  ) |> 
+  addCircleMarkers(
+    data = lines_centroids,
+    color = "purple",
+    radius = 3,
+    fillOpacity = 0.7,
+    group = "Centroids"
+  ) |>
+  # Add beginning points
+  addCircleMarkers(
+    data = begin_points,
+    color = "blue",
+    radius = 6,
+    fillOpacity = 0.7,
+    group = "Beginning Points"
+  ) |> 
+  # Add ending points
+  addCircleMarkers(
+    data = end_points,
+    color = "red",
+    radius = 6,
+    fillOpacity = 0.7,
+    group = "Ending Points"
+  ) |> 
+  # Add layer control
+  addLayersControl(
+    overlayGroups = c("Beginning Points", "Ending Points", "Centroids", "Lines"),
+    options = layersControlOptions(collapsed = FALSE)
+  ) |> 
+  # Fit bounds to all points
+  fitBounds(
+    lng1 = min(st_coordinates(all_points)[,1]),
+    lat1 = min(st_coordinates(all_points)[,2]),
+    lng2 = max(st_coordinates(all_points)[,1]),
+    lat2 = max(st_coordinates(all_points)[,2])
+  )
+```
+
+I'm going to simplify the analysis by only using the centroids of the lines. I want to look at the location of the encounters by year. 
+
+```{r}
+#| label: ggplot map
+
 library(ggspatial)
+library(viridis)
 
 # Create the map
-# ggplot() +
-#   # Add the lines
-#   geom_sf(data = lines_sf, color = "gray50") +
-#   # Add the centroids
-#   geom_sf(data = centroids_sf, color = "red", size = 3) +
-#   # Clean up the theme
-#   theme_minimal() +
-#   # Add title
-#   labs(title = "Line Centroids")
-
+ggplot() +
+  # Add the basemap
+  annotation_map_tile(
+    type = "cartolight",
+    zoom = 8,
+    progress = "none"
+  ) +
+  # Add centroids
+  geom_sf(
+    data = lines_centroids,
+    aes(color = factor(year),
+        fill = factor(year)),
+    # color = "#1f77b4", fill = "#08519c",
+    size = 1.5,
+    alpha = 0.7,
+    shape = 21, 
+    stroke = 1.2
+  ) +
+  scale_color_viridis_d(
+    option = "plasma", 
+    end = 0.9,
+    guide = "none"
+  ) +
+  scale_fill_viridis_d(
+    option = "plasma", 
+    end = 0.9,
+    guide = guide_legend(title = "Year")
+  ) +
+  # Customize the theme
+  theme_map() +
+  # Add title and caption
+  labs(
+    title = "Orca Encounter Locations in the Pacific Northwest",
+    subtitle = "Centroids of encounter paths",
+    caption = "Data: Orca encounters dataset"
+  ) +
+  # Fine-tune the theme
+  theme(
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(size = 12, hjust = 0.5),
+    plot.caption = element_text(size = 8, hjust = 1),
+    plot.margin = margin(15, 15, 20, 20)
+  ) +
+  # Set coordinate system and limits
+  coord_sf(crs = 4326)
 ```
+
+
+## In Progress
+
+In the next phase of this project I would like to analyze whether the mean center of the orca encounters has shifted over the year. 
 
 
 
 ```{r}
-st_is_valid(lines_sf)
-st_is_valid(centroids_sf)
+#| label: improved_map
+#| include: false
 
-print(head(lines_sf))
-print(head(centroids_sf))
+library(tidyverse)
+library(sf)
+library(ggspatial)
+library(ggthemes)
+library(rnaturalearth)
+library(rmapshaper) # for simplifying geometries
 
+# Get land polygons and simplify them
+land <- ne_countries(scale = "medium", returnclass = "sf") %>%
+  ms_simplify(keep = 0.1, keep_shapes = TRUE) %>%
+  st_make_valid()
 
+# Get bbox of data and add buffer
+bbox <- st_bbox(lines_centroids)
+bbox_expanded <- bbox + c(-0.5, -0.5, 0.5, 0.5)
+
+# Create a rectangle for the study area
+study_area <- st_as_sfc(bbox_expanded) %>%
+  st_sf(geometry = .) %>%
+  st_set_crs(4326)
+
+# Crop land to study area safely
+land_cropped <- st_intersection(land, study_area)
+
+# Calculate yearly centers
+yearly_centers <- lines_centroids %>%
+  group_by(year) %>%
+  summarise(geometry = st_union(geometry)) %>%
+  st_centroid()
+
+# Get zoomed bbox based on centers
+centers_bbox <- st_bbox(yearly_centers)
+centers_bbox_expanded <- centers_bbox + c(-0.1, -0.1, 0.1, 0.1)
+
+# Create the map
+ggplot() +
+  # Add basemap
+  annotation_map_tile(
+    type = "cartolight",
+    zoom = 10,
+    progress = "none"
+  ) +
+  # Add land polygons
+  geom_sf(
+    data = land_cropped,
+    fill = "gray90",
+    color = "gray50",
+    size = 0.5
+  ) +
+  # Add all points, transparent
+  geom_sf(
+    data = lines_centroids,
+    aes(color = factor(year)),
+    size = 1.5,
+    alpha = 0.2,
+    shape = 16
+  ) +
+  # Add white buffer behind mean centers
+  geom_sf(
+    data = yearly_centers,
+    color = "white",
+    size = 12,
+    shape = 16
+  ) +
+  # Add black ring around mean centers
+  geom_sf(
+    data = yearly_centers,
+    color = "black",
+    fill = "white",
+    size = 8,
+    shape = 21,
+    stroke = 1.5
+  ) +
+  # Add colored center points
+  geom_sf(
+    data = yearly_centers,
+    aes(color = factor(year)),
+    size = 6,
+    shape = 16
+  ) +
+  # Add labels with improved visibility
+  geom_label(
+    data = yearly_centers %>% 
+      st_coordinates() %>% 
+      as_tibble() %>% 
+      bind_cols(year = yearly_centers$year),
+    aes(x = X, y = Y, label = year, color = factor(year)),
+    fontface = "bold",
+    fill = "white",
+    label.size = 0.5,
+    alpha = 0.9,
+    nudge_y = 0.02,
+    size = 4
+  ) +
+  # Color scheme
+  scale_color_viridis_d(
+    option = "plasma",
+    end = 0.9,
+    name = "Year"
+  ) +
+  # Customize theme
+  theme_map() +
+  labs(
+    title = "Mean Centers of Orca Encounters by Year",
+    subtitle = "Centers shown with land mask overlay",
+    caption = "Data: Natural Earth, Orca encounters dataset"
+  ) +
+  theme(
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(size = 12, hjust = 0.5),
+    plot.caption = element_text(size = 8, hjust = 1),
+    plot.margin = margin(15, 15, 20, 20),
+    legend.position = "right",
+    legend.background = element_rect(
+      fill = "white",
+      color = "gray80"
+    ),
+    legend.box.margin = margin(5, 5, 5, 5)
+  ) +
+  coord_sf(
+    crs = 4326,
+    xlim = c(centers_bbox_expanded[1], centers_bbox_expanded[3]),
+    ylim = c(centers_bbox_expanded[2], centers_bbox_expanded[4])
+  )
 ```
 
-
-
-## Conclusion
-
-This analysis provides insights into the orca encounters recorded in the dataset. We've explored the number of encounters by year, encounter durations, pod distributions, and spatial patterns. Further analysis could include temporal patterns, relationships between variables, and more detailed spatial analysis.
-
-```{r}
-#| label: session-info
-#| echo: false
-
-# Print session info for reproducibility
-sessionInfo()
-```
