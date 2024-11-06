@@ -267,6 +267,8 @@ ggplot() +
   ) +
   # Set coordinate system and limits
   coord_sf(crs = 4326)
+
+# ggsave("images/orca_encounters_map.png", width = 12, height = 8, dpi = 300)
 ```
 
 
@@ -277,7 +279,7 @@ In the next phase of this project I would like to analyze whether the mean cente
 
 
 ```{r}
-#| label: improved_map
+#| label: center mean
 #| include: false
 
 library(tidyverse)
@@ -404,5 +406,122 @@ ggplot() +
     xlim = c(centers_bbox_expanded[1], centers_bbox_expanded[3]),
     ylim = c(centers_bbox_expanded[2], centers_bbox_expanded[4])
   )
+```
+
+
+
+```{r}
+#| label: center means 2
+
+library(tidyverse)
+library(sf)
+library(ggspatial)  # for north arrow and scale bar if needed
+
+puget_water <- ne_download(
+    scale = 50, 
+    type = "geography_marine_polys", 
+    category = "physical",
+    returnclass = "sf"
+  ) %>%
+  st_transform(4326) %>%  # ensure WGS84 projection
+  # Filter for Puget Sound
+  filter(name %in% c("North Pacific Ocean")) 
+
+
+ggplot() +
+  geom_sf(data = puget_water,
+          fill = "blue",
+          color = "navy") +
+  # Add original points with low alpha
+  geom_sf(
+    data = lines_centroids,
+    alpha = 0.1,
+    color = "navy"
+  ) +
+  coord_sf(
+    crs = 4326,
+    xlim = c(centers_bbox_expanded[1], centers_bbox_expanded[3]),
+    ylim = c(centers_bbox_expanded[2], centers_bbox_expanded[4])
+  )
+
+# Assuming your sf object is called 'orca_points' 
+# and has columns: geometry, year, and other attributes
+
+# Calculate center means by year
+center_means <- lines_centroids |> 
+  filter(!st_is_empty(geometry)) |> 
+  # Group by year
+  group_by(year) |> 
+  # Calculate center mean for each year
+  summarise(
+    geometry = st_combine(geometry) |> 
+      st_centroid(),
+    n_sightings = n()  # keeping track of number of sightings per year
+  ) |> 
+  ungroup()
+
+# Create the base plot
+ggplot() +
+  # Add coastline or boundary polygon if you have one
+  # geom_sf(data = coastline, fill = "lightgrey") +
+  geom_sf(data = puget_water, 
+          fill = "lightblue", 
+          color = "navy", 
+          alpha = 0.3)
+  # Add original points with low alpha
+  geom_sf(
+    data = lines_centroids,
+    alpha = 0.1,
+    color = "navy"
+  ) +
+  
+  # Add center means
+  geom_sf(
+    data = center_means,
+    aes(size = n_sightings, color = year),
+    alpha = 0.7
+  ) +
+  
+  # Connect centers chronologically with arrows
+  geom_path(
+    data = center_means %>% 
+      arrange(year) %>%
+      st_coordinates() %>%
+      as.data.frame(),
+    aes(x = X, y = Y),
+    arrow = arrow(length = unit(0.2, "cm"), 
+                 type = "closed"),
+    linetype = "dashed",
+    color = "darkgrey"
+  ) +
+  
+  # Customize the appearance
+  scale_color_viridis_c(
+    option = "plasma",
+    name = "Year"
+  ) +
+  scale_size_continuous(
+    name = "Number of\nSightings",
+    range = c(3, 8)
+  ) +
+  
+  # Add theme elements
+  theme_minimal() +
+  theme(
+    panel.grid.major = element_line(color = "grey90"),
+    panel.grid.minor = element_blank()
+  ) +
+  
+  # Add labels
+  labs(
+    title = "Changes in Orca Center Mean Location Over Time",
+    subtitle = "Size indicates number of sightings per year",
+    caption = "Data source: Your source here"
+  ) +
+  
+  # Fix the aspect ratio for mapping
+  coord_sf()
+
+
 ```
 
