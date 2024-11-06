@@ -6,6 +6,8 @@ format:
     code-fold: true
     toc: true
     toc-depth: 3
+    fig-width: 12
+    fig-height: 8
 execute:
   warning: false
   message: false
@@ -45,7 +47,7 @@ orcas_data <- orcas_data %>%
 
 ## Overview
 
-This data set is from the [#TidyTuesday](https://github.com/rfordatascience/tidytuesday/blob/master/data/2024/2024-10-15/readme.md) project and contains information about orca sightings in the Pacific Northwest. My goals is to start learning to make with open source tools - including R. Most of my daily workflow is happening in R anyway, so it makes sense to be able to create maps in R as well. I will be focusing on creating the points, lines, and polygons from the csv file using the sf package and then experiment with a variety of packages for mapping the data including leaflet and ggplot2. 
+This data set is from the [#TidyTuesday](https://github.com/rfordatascience/tidytuesday/blob/master/data/2024/2024-10-15/readme.md) project and contains information about orca sightings in the Pacific Northwest. My goals is to start learning to make maps with open source tools - including R. Most of my daily workflow is happening in R anyway, so it makes sense to be able to create maps in R as well. I will be focusing on creating the points, lines, and polygons from the csv file using the sf package and then experiment with leaflet and ggplot2 for visualizing the data. 
 
 ## Data Cleaning
 
