@@ -29,6 +29,7 @@ library(sf)
 library(leaflet)
 library(dplyr)
 library(ggthemes)
+library(h3jsr)
 
 # Read the CSV file
 orcas_data <- read_csv("data/orcas.csv")
@@ -62,15 +63,10 @@ orcas_clean <- orcas_data |>
   arrange(date, encounter_number, encounter_sequence) |> 
   mutate(across(where(is.character), toupper),
          row_id = row_number()) |> 
-  select(row_id, year, date, encounter_number, encounter_sequence, pods_or_ecotype, ids_encountered, location, begin_latitude, begin_longitude, end_latitude, end_longitude)
-
-pod_info <- orcas_clean |> 
-  select(row_id, pods_or_ecotype) |> 
-  filter(!is.na(pods_or_ecotype)) |> 
-  distinct()
+  select(row_id, year, date, encounter_number, encounter_sequence, pods_or_ecotype, ids_encountered, location, begin_latitude, begin_longitude, end_latitude, end_longitude) |> 
+  filter(!is.na(begin_latitude) & !is.na(begin_longitude) & !is.na(end_latitude) & !is.na(end_longitude))
 
 
-  
 ```
 
 
@@ -104,6 +100,7 @@ all_points <- rbind(begin_points, end_points) |>
   arrange(row_id, point_type)
 
 
+
 ```
 
 The next step is turning these beginning and ending points into lines by first creating a matrix of the data. That matrix is then used to create the lines in the st_sf function. 
@@ -132,6 +129,8 @@ lines_sf <- st_sf(
   geometry = st_sfc(lines_list, crs = st_crs(all_points))
 )
 
+# rm(begin_points, end_points, lines_list)
+
 ```
 
 Lastly, I wanted to calculate the centroids of the lines to be able to plot them on the map. 
@@ -146,7 +145,7 @@ lines_centroids <- st_centroid(lines_sf) |>
   mutate(line_id = lines_sf$row_id) |> 
   left_join(orcas_clean |> 
               select(row_id, year),
-            by = "row_id")
+            by = "row_id") 
 
 
 
@@ -272,256 +271,62 @@ ggplot() +
 ```
 
 
-## In Progress
+## Mapping Encounter Density
 
-In the next phase of this project I would like to analyze whether the mean center of the orca encounters has shifted over the year. 
-
-
+Can I map these centroids to the H3 spatial index? 
 
 ```{r}
-#| label: center mean
-#| include: false
+#| label: H3 
 
-library(tidyverse)
-library(sf)
-library(ggspatial)
-library(ggthemes)
-library(rnaturalearth)
-library(rmapshaper) # for simplifying geometries
+points_h3 <- lines_centroids |>
+  filter(!st_is_empty(geometry))|> 
+  mutate(
+    h3_index = point_to_cell(
+      geometry, 
+      res = 6
+      )
+    ) 
 
-# Get land polygons and simplify them
-land <- ne_countries(scale = "medium", returnclass = "sf") %>%
-  ms_simplify(keep = 0.1, keep_shapes = TRUE) %>%
-  st_make_valid()
+test_all_years <- points_h3 |>
+  group_by(h3_index) |>
+  summarize(n = n())
 
-# Get bbox of data and add buffer
-bbox <- st_bbox(lines_centroids)
-bbox_expanded <- bbox + c(-0.5, -0.5, 0.5, 0.5)
+h3_polygons <- cell_to_polygon(test_all_years$h3_index, simple = FALSE) |> 
+  st_set_crs(4326) |>
+  bind_cols(test_all_years)
 
-# Create a rectangle for the study area
-study_area <- st_as_sfc(bbox_expanded) %>%
-  st_sf(geometry = .) %>%
-  st_set_crs(4326)
-
-# Crop land to study area safely
-land_cropped <- st_intersection(land, study_area)
-
-# Calculate yearly centers
-yearly_centers <- lines_centroids %>%
-  group_by(year) %>%
-  summarise(geometry = st_union(geometry)) %>%
-  st_centroid()
-
-# Get zoomed bbox based on centers
-centers_bbox <- st_bbox(yearly_centers)
-centers_bbox_expanded <- centers_bbox + c(-0.1, -0.1, 0.1, 0.1)
-
-# Create the map
 ggplot() +
-  # Add basemap
-  annotation_map_tile(
-    type = "cartolight",
-    zoom = 10,
-    progress = "none"
-  ) +
-  # Add land polygons
-  geom_sf(
-    data = land_cropped,
-    fill = "gray90",
-    color = "gray50",
-    size = 0.5
-  ) +
-  # Add all points, transparent
-  geom_sf(
-    data = lines_centroids,
-    aes(color = factor(year)),
-    size = 1.5,
-    alpha = 0.2,
-    shape = 16
-  ) +
-  # Add white buffer behind mean centers
-  geom_sf(
-    data = yearly_centers,
-    color = "white",
-    size = 12,
-    shape = 16
-  ) +
-  # Add black ring around mean centers
-  geom_sf(
-    data = yearly_centers,
-    color = "black",
-    fill = "white",
-    size = 8,
-    shape = 21,
-    stroke = 1.5
-  ) +
-  # Add colored center points
-  geom_sf(
-    data = yearly_centers,
-    aes(color = factor(year)),
-    size = 6,
-    shape = 16
-  ) +
-  # Add labels with improved visibility
-  geom_label(
-    data = yearly_centers %>% 
-      st_coordinates() %>% 
-      as_tibble() %>% 
-      bind_cols(year = yearly_centers$year),
-    aes(x = X, y = Y, label = year, color = factor(year)),
-    fontface = "bold",
-    fill = "white",
-    label.size = 0.5,
-    alpha = 0.9,
-    nudge_y = 0.02,
-    size = 4
-  ) +
-  # Color scheme
-  scale_color_viridis_d(
-    option = "plasma",
-    end = 0.9,
-    name = "Year"
-  ) +
-  # Customize theme
+  # Add the basemap with explicit bounds
+  annotation_map_tile(type = "cartolight", 
+                     zoom = 8,
+                     progress = "none") +
+  # Add your H3 hexagons
+  geom_sf(data = h3_polygons, 
+          aes(fill = n, geometry = `geometry...2`), 
+          color = "white", 
+          linewidth = 0.1,
+          alpha = 0.7) +
+  scale_fill_viridis_c(option = "plasma",
+                       name = "Count") +
+  # Limit the plot to our padded bounding box
+  coord_sf(xlim = c(bbox[1], bbox[3]),
+          ylim = c(bbox[2], bbox[4])) +
   theme_map() +
-  labs(
-    title = "Mean Centers of Orca Encounters by Year",
-    subtitle = "Centers shown with land mask overlay",
-    caption = "Data: Natural Earth, Orca encounters dataset"
-  ) +
   theme(
-    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
-    plot.subtitle = element_text(size = 12, hjust = 0.5),
-    plot.caption = element_text(size = 8, hjust = 1),
-    plot.margin = margin(15, 15, 20, 20),
+    axis.text = element_text(size = 8),
     legend.position = "right",
-    legend.background = element_rect(
-      fill = "white",
-      color = "gray80"
-    ),
-    legend.box.margin = margin(5, 5, 5, 5)
-  ) +
-  coord_sf(
-    crs = 4326,
-    xlim = c(centers_bbox_expanded[1], centers_bbox_expanded[3]),
-    ylim = c(centers_bbox_expanded[2], centers_bbox_expanded[4])
-  )
-```
-
-
-
-```{r}
-#| label: center means 2
-
-library(tidyverse)
-library(sf)
-library(ggspatial)  # for north arrow and scale bar if needed
-
-puget_water <- ne_download(
-    scale = 50, 
-    type = "geography_marine_polys", 
-    category = "physical",
-    returnclass = "sf"
-  ) %>%
-  st_transform(4326) %>%  # ensure WGS84 projection
-  # Filter for Puget Sound
-  filter(name %in% c("North Pacific Ocean")) 
-
-
-ggplot() +
-  geom_sf(data = puget_water,
-          fill = "blue",
-          color = "navy") +
-  # Add original points with low alpha
-  geom_sf(
-    data = lines_centroids,
-    alpha = 0.1,
-    color = "navy"
-  ) +
-  coord_sf(
-    crs = 4326,
-    xlim = c(centers_bbox_expanded[1], centers_bbox_expanded[3]),
-    ylim = c(centers_bbox_expanded[2], centers_bbox_expanded[4])
-  )
-
-# Assuming your sf object is called 'orca_points' 
-# and has columns: geometry, year, and other attributes
-
-# Calculate center means by year
-center_means <- lines_centroids |> 
-  filter(!st_is_empty(geometry)) |> 
-  # Group by year
-  group_by(year) |> 
-  # Calculate center mean for each year
-  summarise(
-    geometry = st_combine(geometry) |> 
-      st_centroid(),
-    n_sightings = n()  # keeping track of number of sightings per year
-  ) |> 
-  ungroup()
-
-# Create the base plot
-ggplot() +
-  # Add coastline or boundary polygon if you have one
-  # geom_sf(data = coastline, fill = "lightgrey") +
-  geom_sf(data = puget_water, 
-          fill = "lightblue", 
-          color = "navy", 
-          alpha = 0.3)
-  # Add original points with low alpha
-  geom_sf(
-    data = lines_centroids,
-    alpha = 0.1,
-    color = "navy"
-  ) +
-  
-  # Add center means
-  geom_sf(
-    data = center_means,
-    aes(size = n_sightings, color = year),
-    alpha = 0.7
-  ) +
-  
-  # Connect centers chronologically with arrows
-  geom_path(
-    data = center_means %>% 
-      arrange(year) %>%
-      st_coordinates() %>%
-      as.data.frame(),
-    aes(x = X, y = Y),
-    arrow = arrow(length = unit(0.2, "cm"), 
-                 type = "closed"),
-    linetype = "dashed",
-    color = "darkgrey"
-  ) +
-  
-  # Customize the appearance
-  scale_color_viridis_c(
-    option = "plasma",
-    name = "Year"
-  ) +
-  scale_size_continuous(
-    name = "Number of\nSightings",
-    range = c(3, 8)
-  ) +
-  
-  # Add theme elements
-  theme_minimal() +
-  theme(
-    panel.grid.major = element_line(color = "grey90"),
+    panel.grid.major = element_blank(),
     panel.grid.minor = element_blank()
   ) +
-  
-  # Add labels
   labs(
-    title = "Changes in Orca Center Mean Location Over Time",
-    subtitle = "Size indicates number of sightings per year",
-    caption = "Data source: Your source here"
-  ) +
-  
-  # Fix the aspect ratio for mapping
-  coord_sf()
-
-
+    title = "H3 Hexagon Distribution",
+    x = "Longitude",
+    y = "Latitude"
+  )
 ```
+
+
+
+
+
 
